@@ -156,4 +156,328 @@
     .modal h2 { font-size: 1.15rem; margin-bottom: 16px; font-weight: 600; }
     .form-group { margin-bottom: 14px; text-align: left; }
     .form-group label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 4px; color: var(--text-sub); }
-    .
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 0.9rem;
+      outline: none;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 20px;
+    }
+
+    @media print {
+      body { padding: 0; background: #fff; }
+      .btn-group, .action-th, .del-row-btn, .status-badge { display: none !important; }
+      .table-container { box-shadow: none; border: 1px solid #000; }
+      th, td { border: 1px solid #000; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div>
+      <h1>학원 시간표 매니저 <span class="status-badge" id="sync-status">연결 확인 중...</span></h1>
+      <p style="font-size: 0.85rem; color: var(--text-sub); margin-top: 2px;">
+        어느 기기에서 수정하든 실시간으로 자동 동기화됩니다.
+      </p>
+    </div>
+    <div class="btn-group">
+      <button class="btn-secondary" onclick="addTimeSlot()">+ 시간대 추가</button>
+      <button class="btn-secondary" onclick="window.print()">인쇄 / PDF</button>
+      <button class="btn-danger" onclick="resetData()">초기화</button>
+    </div>
+  </header>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th class="time-th">시간</th>
+          <th>월</th>
+          <th>화</th>
+          <th>수</th>
+          <th>목</th>
+          <th>금</th>
+          <th>토</th>
+          <th class="action-th">삭제</th>
+        </tr>
+      </thead>
+      <tbody id="schedule-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 일정 등록/수정 모달 -->
+<div class="modal-overlay" id="cell-modal">
+  <div class="modal">
+    <h2 id="modal-title">일정 등록/수정</h2>
+    <div class="form-group">
+      <label>과목 / 학원명</label>
+      <input type="text" id="modal-subject" placeholder="예: 수학, 영어, 피아노">
+    </div>
+    <div class="form-group">
+      <label>장소 / 메모</label>
+      <input type="text" id="modal-memo" placeholder="예: 본관 301호, 셔틀 3호차">
+    </div>
+    <div class="form-group">
+      <label>색상 구분</label>
+      <select id="modal-color">
+        <option value="color-blue">파란색</option>
+        <option value="color-green">초록색</option>
+        <option value="color-yellow">노란색</option>
+        <option value="color-red">빨간색</option>
+        <option value="color-purple">보라색</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger" id="btn-delete-item" onclick="deleteCurrentSchedule()">삭제</button>
+      <button class="btn-secondary" onclick="closeModal()">취소</button>
+      <button class="btn-primary" onclick="saveScheduleItem()">저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 기본 시간표 데이터 정의
+  const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const defaultData = [
+    {
+      id: 'row-1',
+      time: '14:00 - 15:00',
+      mon: { title: '수학학원', memo: '본관 301호', color: 'color-blue' },
+      tue: null,
+      wed: { title: '수학학원', memo: '본관 301호', color: 'color-blue' },
+      thu: null,
+      fri: { title: '운동/줄넘기', memo: '체육관', color: 'color-red' },
+      sat: null
+    },
+    {
+      id: 'row-2',
+      time: '15:30 - 17:00',
+      mon: null,
+      tue: { title: '영어학원', memo: '어학원 2층', color: 'color-green' },
+      wed: null,
+      thu: { title: '영어학원', memo: '어학원 2층', color: 'color-green' },
+      fri: null,
+      sat: { title: '수영', memo: '스포츠센터', color: 'color-yellow' }
+    },
+    {
+      id: 'row-3',
+      time: '17:30 - 18:30',
+      mon: { title: '피아노', memo: '음악학원', color: 'color-purple' },
+      tue: null,
+      wed: { title: '피아노', memo: '음악학원', color: 'color-purple' },
+      thu: null,
+      fri: null,
+      sat: null
+    }
+  ];
+
+  let scheduleData = [...defaultData];
+  let currentActiveCell = null;
+
+  // 화면을 먼저 즉시 렌더링
+  renderTable();
+
+  // Firebase 설정
+  const firebaseConfig = {
+    apiKey: "AIzaSyAS2dF1y_wZV21YEmyA1ukz50G4wqtIL9E",
+    authDomain: "kids-schedule-a90a7.firebaseapp.com",
+    databaseURL: "https://kids-schedule-a90a7-default-rtdb.firebaseio.com",
+    projectId: "kids-schedule-a90a7",
+    storageBucket: "kids-schedule-a90a7.firebasestorage.app",
+    messagingSenderId: "260493053939",
+    appId: "1:260493053939:web:00593cf7b0edcf3f760c86"
+  };
+
+  let scheduleRef = null;
+
+  try {
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    scheduleRef = db.ref('kids_schedule_data');
+
+    scheduleRef.on('value', (snapshot) => {
+      const val = snapshot.val();
+      if (val && Array.isArray(val)) {
+        scheduleData = val;
+      } else {
+        scheduleData = [...defaultData];
+        scheduleRef.set(scheduleData);
+      }
+      const status = document.getElementById('sync-status');
+      status.textContent = '실시간 동기화됨';
+      status.style.backgroundColor = '#dcfce7';
+      status.style.color = '#166534';
+      renderTable();
+    }, (error) => {
+      console.error(error);
+      const status = document.getElementById('sync-status');
+      status.textContent = '동기화 오류 (규칙 확인 필요)';
+      status.style.backgroundColor = '#fee2e2';
+      status.style.color = '#991b1b';
+    });
+  } catch (e) {
+    console.error("Firebase 초기화 에러:", e);
+  }
+
+  function saveToCloud() {
+    if (scheduleRef) {
+      scheduleRef.set(scheduleData);
+    }
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('schedule-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    scheduleData.forEach((row, rIdx) => {
+      const tr = document.createElement('tr');
+
+      const tdTime = document.createElement('td');
+      tdTime.className = 'time-cell';
+      tdTime.textContent = row.time;
+      tdTime.title = '클릭하여 시간 변경';
+      tdTime.onclick = () => editTimeSlot(rIdx);
+      tr.appendChild(tdTime);
+
+      DAYS.forEach(day => {
+        const td = document.createElement('td');
+        td.className = 'schedule-cell';
+        const item = row[day];
+
+        if (item && item.title) {
+          td.innerHTML = `
+            <div class="card ${item.color || 'color-blue'}">
+              <span class="card-title">${escapeHtml(item.title)}</span>
+              ${item.memo ? `<span class="card-memo">${escapeHtml(item.memo)}</span>` : ''}
+            </div>
+          `;
+        } else {
+          td.innerHTML = `<span style="color: #cbd5e1;">-</span>`;
+        }
+
+        td.onclick = () => openModal(rIdx, day);
+        tr.appendChild(td);
+      });
+
+      const tdDel = document.createElement('td');
+      tdDel.className = 'del-row-btn';
+      tdDel.innerHTML = `<button class="btn-danger" style="padding: 4px 8px; font-size: 0.75rem;" onclick="deleteTimeRow(${rIdx})">×</button>`;
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function openModal(rowIndex, day) {
+    currentActiveCell = { rowIndex, day };
+    const item = scheduleData[rowIndex][day];
+    const delBtn = document.getElementById('btn-delete-item');
+
+    if (item && item.title) {
+      document.getElementById('modal-subject').value = item.title;
+      document.getElementById('modal-memo').value = item.memo || '';
+      document.getElementById('modal-color').value = item.color || 'color-blue';
+      delBtn.style.display = 'inline-block';
+    } else {
+      document.getElementById('modal-subject').value = '';
+      document.getElementById('modal-memo').value = '';
+      document.getElementById('modal-color').value = 'color-blue';
+      delBtn.style.display = 'none';
+    }
+
+    document.getElementById('cell-modal').style.display = 'flex';
+    document.getElementById('modal-subject').focus();
+  }
+
+  function closeModal() {
+    document.getElementById('cell-modal').style.display = 'none';
+    currentActiveCell = null;
+  }
+
+  function saveScheduleItem() {
+    if (!currentActiveCell) return;
+    const { rowIndex, day } = currentActiveCell;
+    const title = document.getElementById('modal-subject').value.trim();
+    const memo = document.getElementById('modal-memo').value.trim();
+    const color = document.getElementById('modal-color').value;
+
+    if (!title) {
+      scheduleData[rowIndex][day] = null;
+    } else {
+      scheduleData[rowIndex][day] = { title, memo, color };
+    }
+
+    renderTable();
+    saveToCloud();
+    closeModal();
+  }
+
+  function deleteCurrentSchedule() {
+    if (!currentActiveCell) return;
+    const { rowIndex, day } = currentActiveCell;
+    scheduleData[rowIndex][day] = null;
+    renderTable();
+    saveToCloud();
+    closeModal();
+  }
+
+  function addTimeSlot() {
+    const time = prompt('추가할 시간대를 입력하세요 (예: 16:00 - 17:00):');
+    if (!time || !time.trim()) return;
+
+    scheduleData.push({
+      id: 'row-' + Date.now(),
+      time: time.trim(),
+      mon: null, tue: null, wed: null, thu: null, fri: null, sat: null
+    });
+    renderTable();
+    saveToCloud();
+  }
+
+  function editTimeSlot(rowIndex) {
+    const current = scheduleData[rowIndex].time;
+    const updated = prompt('시간대를 수정하세요:', current);
+    if (updated !== null && updated.trim() !== '') {
+      scheduleData[rowIndex].time = updated.trim();
+      renderTable();
+      saveToCloud();
+    }
+  }
+
+  function deleteTimeRow(rowIndex) {
+    if (confirm(`'${scheduleData[rowIndex].time}' 시간대 행 전체를 삭제하시겠습니까?`)) {
+      scheduleData.splice(rowIndex, 1);
+      renderTable();
+      saveToCloud();
+    }
+  }
+
+  function resetData() {
+    if (confirm('모든 시간표 데이터를 기본값으로 초기화하시겠습니까?')) {
+      scheduleData = [...defaultData];
+      renderTable();
+      saveToCloud();
+    }
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+</script>
+</body>
+</html>
